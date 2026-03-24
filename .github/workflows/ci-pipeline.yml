@@ -1,0 +1,100 @@
+name: CD Pipeline to Home Server (staging and production)
+on:
+  push:
+    branches:
+      - staging
+      - main
+  workflow_dispatch: {}
+  release:
+    types: [published]
+
+env:
+  PORT: 5001
+  IMAGE: ${{ vars.IMAGE }}:${{ github.sha }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Setup, test, and build project
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test application
+        run: npm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    name: Build, push image, and deploy to home server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Authenticate for Docker Hub
+        env:
+          D_USER: ${{ secrets.DOCKER_USER }}
+          D_PASS: ${{ secrets.DOCKER_PASSWORD }}
+        run: docker login -u $D_USER -p $D_PASS
+
+      - name: Build and tag image
+        run: docker build -t ${{ env.IMAGE }} .
+
+      - name: Push image to Docker Hub
+        run: docker push ${{ env.IMAGE }}
+
+      # --- Cloudflare + SSH setup on the runner ---
+      - name: Install cloudflared on runner
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Configure SSH to proxy through Cloudflare Tunnel
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config << EOF
+          Host ${{ secrets.SERVER_HOST }}
+            ProxyCommand cloudflared access ssh --hostname %h
+            StrictHostKeyChecking no
+          EOF
+
+      # --- Staging deploy ---
+      - name: Deploy to Staging
+        if: github.ref == 'refs/heads/staging'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_SSH_PORT }}
+          script: |
+            docker pull ${{ env.IMAGE }}
+            docker stop my-app-staging || true
+            docker rm my-app-staging || true
+            docker run -d \
+              --name my-app-staging \
+              --restart unless-stopped \
+              -p 5002:5001 \
+              ${{ env.IMAGE }}
+
+      # --- Production deploy ---
+      - name: Deploy to Production
+        if: github.event_name == 'release' && github.event.action == 'published' && github.event.release.target_commitish == 'main'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_SSH_PORT }}
+          script: |
+            docker pull ${{ env.IMAGE }}
+            docker stop my-app-production || true
+            docker rm my-app-production || true
+            docker run -d \
+              --name my-app-production \
+              --restart unless-stopped \
+              -p 5001:5001 \
+              ${{ env.IMAGE }}
