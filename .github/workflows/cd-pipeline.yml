@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - staging
+      - main
   workflow_dispatch: {}
   release:
     types: [published]
