@@ -76,6 +76,7 @@ jobs:
               --name my-app-staging \
               --restart unless-stopped \
               -p 5002:5001 \
+              -e PORT=5001 \
               ${{ env.IMAGE }}
           "
 
@@ -91,5 +92,6 @@ jobs:
               --name my-app-production \
               --restart unless-stopped \
               -p 5001:5001 \
+              -e PORT=5001 \
               ${{ env.IMAGE }}
           "
